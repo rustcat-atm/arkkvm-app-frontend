@@ -11,9 +11,11 @@
  * @author zhanglei
  */
 
+import { Dialog } from '@/components/Dialog';
 import {
   useDesktopRtc,
   type DataChannels,
+  type LeaseRefusedDetail,
   type ViewerStatus,
 } from '@/hooks/useDesktopRtc';
 import { useOcrCapture } from '@/hooks/useOcrCapture';
@@ -207,6 +209,42 @@ export const RemoteScreen = forwardRef<RemoteScreenHandle, RemoteScreenProps>(
     // WebRTC Connection
     // ========================================================================
 
+    // The device refused us because someone else holds the control lease. Keep the detail so
+    // we can name the holder, and a reason the operator types -- a canned string would defeat
+    // the point of requiring one.
+    const [leaseRefusal, setLeaseRefusal] = useState<LeaseRefusedDetail | null>(null);
+    const [takeoverReason, setTakeoverReason] = useState('');
+    const [takingOver, setTakingOver] = useState(false);
+
+    // `reconnect` is declared below by the hook; hold it in a ref so the takeover handler can
+    // call it without depending on declaration order. Same pattern as reconnectWithGuardRef.
+    const reconnectRef = useRef<(() => void) | null>(null);
+
+    const takeOver = useCallback(async () => {
+      const reason = takeoverReason.trim();
+      if (!reason) return;
+      setTakingOver(true);
+      try {
+        const res = await fetch('/api/session', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ holder: 'web-ui', reason }),
+        });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body?.error ?? `takeover refused (${res.status})`);
+        }
+        setLeaseRefusal(null);
+        reconnectRef.current?.();
+      } catch (e) {
+        // Leave the dialog open: the operator can read what happened and try again.
+        setLeaseRefusal(prev => ({ ...prev, error: String(e) }));
+      } finally {
+        setTakingOver(false);
+      }
+    }, [takeoverReason]);
+
     const {
       connectionState,
       viewerStatus,
@@ -224,7 +262,13 @@ export const RemoteScreen = forwardRef<RemoteScreenHandle, RemoteScreenProps>(
       onPeerConnection,
       onDataChannels,
       onPeerConnectionStateChange,
+      onLeaseRefused: detail => {
+        setTakeoverReason('');
+        setLeaseRefusal(detail);
+      },
     });
+
+    reconnectRef.current = reconnect;
 
     useEffect(() => {
       onViewerStatusChange?.(viewerStatus);
@@ -635,9 +679,54 @@ export const RemoteScreen = forwardRef<RemoteScreenHandle, RemoteScreenProps>(
                   )}
               </div>
             )}
+
+          {/* Someone else holds the control lease. Name them, and offer the way in -- which
+              requires a reason the operator writes, because a canned one would make the
+              takeover audit trail worthless. */}
+          <Dialog
+            open={leaseRefusal !== null}
+            onOpenChange={open => !open && setLeaseRefusal(null)}
+            title="This device is in use"
+            description={
+              leaseRefusal?.held_by
+                ? `Held by ${leaseRefusal.held_by}${
+                    typeof leaseRefusal.expires_in_secs === 'number'
+                      ? `, for another ${leaseRefusal.expires_in_secs}s`
+                      : ''
+                  }.`
+                : 'Another client holds the control lease.'
+            }
+            confirmText={takingOver ? 'Taking over...' : 'Take over'}
+            confirmDisabled={takeoverReason.trim().length === 0 || takingOver}
+            cancelText="Wait"
+            onConfirm={takeOver}
+            onCancel={() => setLeaseRefusal(null)}
+            width="520px"
+            contentClassName="z-[9999]"
+          >
+            <label className="block text-sm">
+              <span className="mb-1 block">Why are you taking it over?</span>
+              <textarea
+                className="w-full rounded border p-2 text-sm"
+                rows={2}
+                autoFocus
+                value={takeoverReason}
+                onChange={e => setTakeoverReason(e.target.value)}
+                placeholder="e.g. the overnight job is wedged on the BIOS screen"
+              />
+            </label>
+            {leaseRefusal?.error && (
+              <p className="mt-2 text-sm text-red-600">{leaseRefusal.error}</p>
+            )}
+          </Dialog>
+
         </div>
       ),
       [
+        leaseRefusal,
+        takeoverReason,
+        takingOver,
+        takeOver,
         className,
         containerRef,
         connectionState.webrtc,

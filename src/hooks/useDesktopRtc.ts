@@ -193,6 +193,17 @@ export interface UseDesktopRtcOptions {
 
   // Optional: External audio element Ref
   audioRef?: React.RefObject<HTMLAudioElement>
+
+  // The device refused this connection because someone else holds the control lease.
+  // Given the holder and the time remaining so the caller can offer a takeover.
+  onLeaseRefused?: (detail: LeaseRefusedDetail) => void
+}
+
+export interface LeaseRefusedDetail {
+  held_by?: string
+  expires_in_secs?: number
+  error?: string
+  hint?: string
 }
 
 // Hook return type
@@ -272,6 +283,7 @@ export const useDesktopRtc = ({
   rtcConfig = {},
   captureAudio = true,
 
+  onLeaseRefused,
   onMessage: _onMessage,
   onPeerConnection,
   onDataChannels,
@@ -672,11 +684,14 @@ export const useDesktopRtc = ({
         const secs = data?.expires_in_secs;
         const until =
           typeof secs === 'number' ? ` It expires in ${secs}s.` : '';
-        const detail = `The device is in use by ${held}.${until} Take it over with a reason via POST /api/session.`;
+        const detail = `The device is in use by ${held}.${until}`;
         addLog(detail, 'error');
         setConnectionStatusMessage(detail);
         setConnectionState(prev => ({ ...prev, webrtc: 'failed' }));
         updateViewerStatus('failed');
+        // Hand the caller the holder and the time left so it can offer a takeover. Telling a
+        // person at a browser to issue an HTTP request is not an answer.
+        onLeaseRefused?.(data ?? {});
         return;
       }
 
