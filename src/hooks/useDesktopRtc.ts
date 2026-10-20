@@ -663,6 +663,23 @@ export const useDesktopRtc = ({
         return;
       }
 
+      // The device refuses a takeover while someone else holds the control lease. It used to
+      // answer by dropping the signalling socket, which looked identical to the device being
+      // unreachable. It now says who holds it and for how long, so surface that instead of
+      // leaving the user staring at a failed connection with no cause.
+      if (type === 'leaseRefused') {
+        const held = data?.held_by ?? 'another client';
+        const secs = data?.expires_in_secs;
+        const until =
+          typeof secs === 'number' ? ` It expires in ${secs}s.` : '';
+        const detail = `The device is in use by ${held}.${until} Take it over with a reason via POST /api/session.`;
+        addLog(detail, 'error');
+        setConnectionStatusMessage(detail);
+        setConnectionState(prev => ({ ...prev, webrtc: 'failed' }));
+        updateViewerStatus('failed');
+        return;
+      }
+
       if (type === 'answer') {
         log('[WebRTC][%d] Received answer from server', Date.now());
         const pc = peerConnectionRef.current;
